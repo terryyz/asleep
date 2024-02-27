@@ -1,0 +1,9 @@
+Secure:        353
+Insecure:       72
+Skipped:         0
+Invalid:       247
+CodeQL error:  328
+Valid:         425
+Pending:         0
+Total:        1000
+72 insecure, 353 secure, 247 invalid (16.9% valid but insecure)
