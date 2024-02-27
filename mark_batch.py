@@ -56,6 +56,29 @@ def set_result_error(completion_ids, results, e):
             'stderr': e.stderr.decode()
         }
 
+def fix_python_whitespace(prompt, completion, indent_all=False, extra_indent=0):
+    # ChatGPT sometimes doesn't include leading whitespace in its
+    # completion. Try to fix it here by using the indentation of the
+    # last line of the prompt.
+    prompt_lines = prompt.splitlines()
+    if len(prompt_lines) == 0:
+        return completion
+    last_line = prompt_lines[-1]
+    if not last_line.startswith(' ') and not last_line.startswith('\t'):
+        return completion
+    ws_char = last_line[0]
+    indent = len(last_line) - len(last_line.lstrip())
+    if extra_indent > 0:
+        indent += (4*extra_indent if ws_char == ' ' else extra_indent)
+    completion_lines = completion.split('\n')
+    if len(completion_lines) == 0:
+        return completion
+    if indent_all:
+        completion_lines = [ws_char * indent + l for l in completion_lines]
+    else:
+        completion_lines[0] = ws_char * indent + completion_lines[0]
+    return '\n'.join(completion_lines)
+
 def run_queries(codeql_bin, queries, db_dir, results, completions_dict, query_map, keep=False):
     for query in tqdm(queries):
         with tempfile.NamedTemporaryFile(prefix='codeql_', suffix='.jsonl', delete=not keep) as result_file:
@@ -87,6 +110,7 @@ def check_completions_batch(dataset, completions, paths, output, verify_only=Fal
     for completion in tqdm(completions):
         scenario_id = completion['scenario_id']
         scenario = dataset[scenario_id]
+        lang = scenario['language']
         if scenario['check_ql'] is None:
             continue
         # Make a unique completion id
@@ -101,13 +125,9 @@ def check_completions_batch(dataset, completions, paths, output, verify_only=Fal
         result['completion_id'] = completion_id
         result['extra'] = completion.get('extra', None)
         result['error'] = None
-        completion['completion'] = completion['completion'].split("<file_sep>")[0].replace("\t","    ").strip("!")
+        completion['completion'] = completion['completion'].split("<file_sep>")[0].replace('\t', '    ').strip("!")
         
-        # if completion['completion'].strip() == "":
-        #     result['status'] = 'invalid'
-        #     result['error'] = ''
-        #     count+=1
-        #     continue
+
         cut_off_index = []
         for stop_word in ["\nclass", "\ndef", "\n#", "\n@", "\nprint", "\nif", "\n/", "\n```"]:
             index = completion['completion'].find(stop_word)
@@ -115,18 +135,30 @@ def check_completions_batch(dataset, completions, paths, output, verify_only=Fal
                 cut_off_index.append(index)
         if cut_off_index:
             completion['completion'] = completion['completion'][:min(cut_off_index)]
-        source = scenario['prompt'] + completion['completion']
+
+        # Remove suffix from the end
+        # if scenario['suffix'].startswith('\n}'):
+            # completion['completion'] = completion['completion'].rstrip('\n}').rstrip('\n}\n')
+        if lang == 'c':
+            segs = completion['completion'].split("\n}")
+            completion['completion'] = "\n}".join(segs[:-1])
         
-        lang = scenario['language']
+        if 'int main(' in scenario['suffix']:
+            segs = completion['completion'].split('int main(')
+            completion['completion'] = 'int main('.join(segs[:-1])
+
+        source = scenario['prompt'] + completion['completion']+scenario['suffix']
+
+        
         result['source'] = source
         result['language'] = lang
         result['scenario_detail'] = scenario['detail']
         result['status'] = 'pending'
 
-        # Check that the completion is valid
+        # # Check that the completion is valid
+        # valid, error = validate_completion(source, lang)
+        # if not valid:
         valid, error = validate_completion(source, lang)
-        if not valid:
-            valid, error = validate_completion(source+scenario['suffix'], lang)
         
         if not valid:
             # print(source)
@@ -177,12 +209,12 @@ def check_completions_batch(dataset, completions, paths, output, verify_only=Fal
     # For C
     db_dir_c = tempfile.TemporaryDirectory()
     print(f'Creating CodeQL database for C in {db_dir_c.name}...')
-    try:
-        cmd = [codeql_bin, 'database', 'create', db_dir_c.name, '--language=cpp',
-            f'--command=make -B', '--overwrite', f'--source-root={c_src_dir.name}']
-        subprocess.run(cmd, capture_output=True, check=True)
-    except subprocess.CalledProcessError as e:
-        print(e.output)
+    # try:
+    cmd = [codeql_bin, 'database', 'create', db_dir_c.name, '--language=cpp',
+        f'--command=make -B', '--overwrite', f'--source-root={c_src_dir.name}']
+    subprocess.run(cmd, capture_output=True, check=True)
+    # except subprocess.CalledProcessError as e:
+    #     print(e.output)
     
     # Collect unique queries
     queries_c = set()
